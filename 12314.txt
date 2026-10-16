@@ -1694,9 +1694,12 @@ def _get_commission(subcat_id: int) -> float:
         matching = [m for m in methods if m.get("unit") == cur]
         if matching:
             k = float(min(matching, key=lambda x: float(x.get("price", 1000))).get("price", 1000)) / 1000.0
+            # Кешируем только корректно полученный от API результат
+            _commission_cache[sid] = k
     except Exception as e:
         logger.debug(f"{LP} [AC] commission sub={sid}: {e}")
-    _commission_cache[sid] = k
+    # Не кешируем k=1.0 (неопределённое значение при ошибке API),
+    # чтобы следующий вызов повторил запрос к API
     return k
 
 
