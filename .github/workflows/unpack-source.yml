@@ -71,6 +71,140 @@ jobs:
           fi
           echo "pom=$POM" >> "$GITHUB_OUTPUT"
           echo "Found Maven project: $POM" | tee extracted/AUDIT_STATUS.txt
+      - name: Apply audited safety fixes
+        if: steps.extract.outcome == 'success'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          
+          root = Path("extracted")
+          
+          plugin = root / "src/main/java/com/skyworldclans/SkyWorldClansPlugin.java"
+          s = plugin.read_text(encoding="utf-8")
+          old_line = """            clanRewardCoordinator = new ClanRewardCoordinator(getClanStore(), getClanStore(),
+                              vaultEconomyBridge, java.time.Clock.systemUTC(), java.util.UUID::randomUUID);
+          """
+          if s.count(old_line) != 1:
+              raise SystemExit("Expected exactly one early reward coordinator construction")
+          s = s.replace(old_line, "", 1)
+          needle = "        vaultEconomyBridge = discoverVaultEconomyBridge();\n"
+          if s.count(needle) != 1:
+              raise SystemExit("Could not locate Vault discovery point")
+          s = s.replace(needle, needle + """        clanRewardCoordinator = new ClanRewardCoordinator(getClanStore(), getClanStore(),
+                          vaultEconomyBridge, java.time.Clock.systemUTC(), java.util.UUID::randomUUID);
+          """, 1)
+          
+          start = s.index("    public boolean isChatMuted(")
+          end = s.index("\n    /** Administrative function blocks", start)
+          new_method = """    public boolean isChatMuted(java.util.UUID playerId) {
+                  if (clanRuntime == null || playerId == null) return true;
+                  try {
+                      ClanAdministrationService admin = clanAdministrationService;
+                      ClanModerationService moderation = clanModerationService;
+                      if (admin == null || moderation == null) return true;
+                      if (admin.isFunctionBlocked(playerId, "CLAN_CHAT", java.time.Instant.now())) return true;
+                      var clan = getClanStore().findByPlayerId(playerId).orElse(null);
+                      return clan != null && moderation.isChatMuted(clan.id(), playerId);
+                  } catch (RuntimeException exception) {
+                      getLogger().log(Level.SEVERE, "Could not read clan chat mute for " + playerId, exception);
+                      return true;
+                  }
+              }
+          """
+          s = s[:start] + new_method + s[end:]
+          plugin.write_text(s, encoding="utf-8")
+          
+          admin = root / "src/main/java/com/skyworldclans/admin/ClanAdministrationService.java"
+          s = admin.read_text(encoding="utf-8")
+          old_reports = """    public List<SqliteClanStore.ClanReport> reports(Level level, String status, int limit) {
+                  if (level == Level.NONE) return List.of();
+                  return store.findClanReports(status, limit);
+              }
+          """
+          new_reports = """    public List<SqliteClanStore.ClanReport> reports(Level level, String status, int limit) {
+                  if (level == Level.NONE) return List.of();
+                  return store.findClanReports(status, limit).stream()
+                          .map(report -> report.anonymous() && level != Level.OWNER
+                                  ? new SqliteClanStore.ClanReport(report.reportId(), report.clanId(),
+                                          new UUID(0L, 0L), "anonymous", true, report.category(), report.reason(),
+                                          report.status(), report.assignedTo(), report.createdAt(), report.updatedAt())
+                                  : report)
+                          .toList();
+              }
+          """
+          if s.count(old_reports) != 1:
+              raise SystemExit("Expected reports() implementation not found exactly once")
+          admin.write_text(s.replace(old_reports, new_reports, 1), encoding="utf-8")
+          
+          test = root / "src/test/java/com/skyworldclans/admin/ClanAdministrationServiceTest.java"
+          s = test.read_text(encoding="utf-8")
+          needle = """            UUID anonymousId = store.findClanReports(null, 50).stream()
+                              .filter(report -> report.anonymous()).findFirst().orElseThrow().reportId();
+          """
+          addition = needle + """            var listedModeratorReport = service.reports(ClanAdministrationService.Level.MODERATOR, null, 50)
+                              .stream().filter(report -> report.reportId().equals(anonymousId)).findFirst().orElseThrow();
+                      assertEquals("anonymous", listedModeratorReport.authorName());
+                      assertEquals(new UUID(0L, 0L), listedModeratorReport.authorId());
+                      var listedOwnerReport = service.reports(ClanAdministrationService.Level.OWNER, null, 50)
+                              .stream().filter(report -> report.reportId().equals(anonymousId)).findFirst().orElseThrow();
+                      assertEquals("Hidden", listedOwnerReport.authorName());
+                      assertEquals(id(3), listedOwnerReport.authorId());
+          """
+          if s.count(needle) != 1:
+              raise SystemExit("Could not locate anonymous report test insertion point")
+          test.write_text(s.replace(needle, addition, 1), encoding="utf-8")
+          
+          plugin_yml = root / "src/main/resources/plugin.yml"
+          s = plugin_yml.read_text(encoding="utf-8")
+          old_perm = """  skyworldclans.admin.owner:
+              description: Owner level of the clan admin panel (full access, anonymous report identities)
+              default: op
+          """
+          new_perm = """  skyworldclans.admin.owner:
+              description: Owner level of the clan admin panel (full access, anonymous report identities)
+              default: false
+          """
+          if s.count(old_perm) != 1:
+              raise SystemExit("Owner permission declaration not found")
+          plugin_yml.write_text(s.replace(old_perm, new_perm, 1), encoding="utf-8")
+          
+          commands = root / "docs/COMMANDS_AND_PERMISSIONS.md"
+          s = commands.read_text(encoding="utf-8")
+          s = s.replace("### Административные (только консоль)", "### Административные команды и панель")
+          s = s.replace("крупные (>100 000) заблокированы до решения вопроса №4.",
+                        "крупные (>100 000) требуют одобрения лидера; недельная квота расходуется при одобрении (3 за 7 дней).")
+          tick = chr(96)
+          old_row = "| " + tick + "skyworldclans.admin.owner" + tick + " | Владелец: полный доступ панели, личность автора жалобы | " + tick + "op" + tick
+          new_row = "| " + tick + "skyworldclans.admin.owner" + tick + " | Владелец: полный доступ панели, личность автора жалобы | " + tick + "false" + tick
+          s = s.replace(old_row, new_row)
+          s = s.replace("- Дом: одна бесплатная основная точка (дополнительные — вопрос владельца №2).",
+                        "- Дом: первая точка бесплатна; вторая покупается лидером за 200 000 из банка; максимум 2 точки.")
+          commands.write_text(s, encoding="utf-8")
+          
+          report = root / "docs/IMPLEMENTATION_REPORT.md"
+          s = report.read_text(encoding="utf-8")
+          s = s.replace("426 тестов", "445 тестов")
+          a = s.index("## 3. Ограничения")
+          b = s.index("## 4. Внешние зависимости", a)
+          new_section = """## 3. Остаточные блокеры и незавершённая приёмка
+          
+          | Блокер | Текущее безопасное поведение | Что требуется |
+          |---|---|---|
+          | SWCoin | Все операции отключены; списания и начисления не имитируются | Подтверждённый публичный API SkyWorldCoins с атомарными операциями |
+          | Регистрация турниров | Создание и настройка доступны; открытие регистрации заблокировано | Утвердить цену и правила оплаты |
+          | CombatLog после рестарта | INTERRUPTED_REVIEW, автоматических санкций нет | Решение владельца по вопросу №6 |
+          | Закрытие дела после предупреждений | Дело эскалируется лидеру через 24 часа; автоматического наказания нет | Решение владельца по вопросу №9 |
+          | Живой Paper 1.21.11 | Maven-сборка и unit-тесты пройдены; GUI и серверные события не принимались на живом сервере | Общая приёмка на отдельном тестовом сервере |
+          | Внешние интеграции | Контракты и fail-closed ветки проверены тестами | Runtime-проверка Vault, WorldGuard и FlectonePulse с реальными плагинами |
+          
+          """
+          s = s[:a] + new_section + s[b:]
+          report.write_text(s, encoding="utf-8")
+          
+          print("Applied audited safety fixes and documentation corrections.")
+          
+          PY
       - name: Run Maven tests and package
         id: maven
         if: steps.extract.outcome == 'success'
