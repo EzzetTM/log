@@ -27,7 +27,7 @@ jobs:
           root = pathlib.Path("extracted").resolve()
           with zipfile.ZipFile("SkyWorldClans-1.0.0-source.zip") as archive:
               for item in archive.infolist():
-                  name = item.filename.replace("\\\\", "/")
+                  name = item.filename.replace("\\", "/")
                   target = (root / name).resolve()
                   if target != root and root not in target.parents:
                       raise SystemExit(f"Unsafe archive path: {item.filename}")
