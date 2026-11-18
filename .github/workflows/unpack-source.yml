@@ -1,0 +1,71 @@
+name: SkyWorldClans source audit
+on:
+  push:
+    paths:
+      - "SkyWorldClans-1.0.0-source.zip"
+      - ".github/workflows/unpack-source.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  extract-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Extract source archive
+        id: extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          unzip -q SkyWorldClans-1.0.0-source.zip -d extracted
+          POM="$(find extracted -type f -name pom.xml -print -quit)"
+          if [ -z "$POM" ]; then
+            echo "No pom.xml found in source archive" | tee extracted/AUDIT_STATUS.txt
+            exit 2
+          fi
+          echo "pom=$POM" >> "$GITHUB_OUTPUT"
+          echo "Found Maven project: $POM" | tee extracted/AUDIT_STATUS.txt
+      - name: Run Maven tests and package
+        id: maven
+        if: steps.extract.outcome == 'success'
+        shell: bash
+        run: |
+          set +e
+          POM="${{ steps.extract.outputs.pom }}"
+          PROJECT_DIR="$(dirname "$POM")"
+          cd "$PROJECT_DIR"
+          mvn -B -ntp clean verify
+          RESULT=$?
+          echo "MAVEN_EXIT_CODE=$RESULT" >> "$GITHUB_ENV"
+          echo "Maven clean verify exit code: $RESULT" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+      - name: Collect audit status
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p audit-output
+          echo "Maven exit code: ${MAVEN_EXIT_CODE:-not-run}" > audit-output/AUDIT_STATUS.txt
+          find extracted -type f \( -name '*.java' -o -name '*.yml' -o -name '*.yaml' -o -name '*.md' -o -name 'pom.xml' \) | sort > audit-output/SOURCE_FILE_LIST.txt
+          find extracted -type f \( -path '*/target/surefire-reports/*' -o -path '*/target/failsafe-reports/*' -o -name '*.jar' \) -exec cp --parents {} audit-output/ \; 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skyworldclans-source-and-audit
+          path: |
+            extracted/
+            audit-output/
+          if-no-files-found: error
+          retention-days: 3
+      - name: Fail workflow if Maven verification failed
+        if: always() && steps.maven.outcome == 'success'
+        shell: bash
+        run: |
+          if [ "${MAVEN_EXIT_CODE:-1}" != "0" ]; then
+            exit 1
+          fi
