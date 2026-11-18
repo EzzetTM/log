@@ -156,10 +156,13 @@ jobs:
           # Owner-only permission is not inherited by every OP.
           plugin_yml = root / "src/main/resources/plugin.yml"
           s = plugin_yml.read_text(encoding="utf-8")
-          pattern = r"(?m)(^  skyworldclans\.admin\.owner:\n    description:.*\n    default: )op$"
-          s, n = re.subn(pattern, r"\g<1>false", s)
-          if n != 1:
-              raise SystemExit(f"Expected one owner permission default, replaced {n}")
+          start = s.index("  skyworldclans.admin.owner:")
+          end = s.index("\\n  skyworldclans.admin.moderator:", start)
+          owner_block = s[start:end]
+          if "    default: op" not in owner_block:
+              raise SystemExit("Owner permission default is not OP as expected")
+          owner_block = owner_block.replace("    default: op", "    default: false", 1)
+          s = s[:start] + owner_block + s[end:]
           plugin_yml.write_text(s, encoding="utf-8")
           
           # Correct stale documentation around resolved decisions and the actual residual blockers.
