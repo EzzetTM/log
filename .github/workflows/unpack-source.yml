@@ -27,13 +27,25 @@ jobs:
           root = pathlib.Path("extracted").resolve()
           conflicts = []
           with zipfile.ZipFile("SkyWorldClans-1.0.0-source.zip") as archive:
+              entries = []
+              directories = set()
               for item in archive.infolist():
                   name = item.filename.replace("\\", "/").lstrip("/")
+                  parts = pathlib.PurePosixPath(name).parts
+                  if not parts or ".." in parts:
+                      conflicts.append(f"UNSAFE {item.filename}")
+                      continue
+                  entries.append((item, name))
+                  if item.is_dir():
+                      directories.add(name.rstrip("/"))
+                  for index in range(1, len(parts)):
+                      directories.add("/".join(parts[:index]))
+              for item, name in entries:
                   target = (root / name).resolve()
                   if target != root and root not in target.parents:
                       conflicts.append(f"UNSAFE {item.filename}")
                       continue
-                  if item.is_dir():
+                  if name.rstrip("/") in directories:
                       if target.exists() and not target.is_dir():
                           conflicts.append(f"DIR_COLLISION {item.filename} -> {target}")
                           continue
