@@ -25,18 +25,32 @@ jobs:
           python3 - <<'PY'
           import pathlib, zipfile
           root = pathlib.Path("extracted").resolve()
+          conflicts = []
           with zipfile.ZipFile("SkyWorldClans-1.0.0-source.zip") as archive:
               for item in archive.infolist():
-                  name = item.filename.replace("\\", "/")
+                  name = item.filename.replace("\\", "/").lstrip("/")
                   target = (root / name).resolve()
                   if target != root and root not in target.parents:
-                      raise SystemExit(f"Unsafe archive path: {item.filename}")
+                      conflicts.append(f"UNSAFE {item.filename}")
+                      continue
                   if item.is_dir():
+                      if target.exists() and not target.is_dir():
+                          conflicts.append(f"DIR_COLLISION {item.filename} -> {target}")
+                          continue
                       target.mkdir(parents=True, exist_ok=True)
                   else:
+                      if target.parent.exists() and not target.parent.is_dir():
+                          conflicts.append(f"PARENT_COLLISION {item.filename} -> {target.parent}")
+                          continue
                       target.parent.mkdir(parents=True, exist_ok=True)
+                      if target.exists() and target.is_dir():
+                          conflicts.append(f"FILE_DIR_COLLISION {item.filename} -> {target}")
+                          continue
                       with archive.open(item) as source, target.open("wb") as destination:
                           destination.write(source.read())
+          if conflicts:
+              pathlib.Path("extracted/ZIP_PATH_CONFLICTS.txt").write_text("\n".join(conflicts), encoding="utf-8")
+              print("\n".join(conflicts))
           PY
           POM="$(find extracted -type f -name pom.xml -print -quit)"
           if [ -z "$POM" ]; then
