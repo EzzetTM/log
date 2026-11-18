@@ -1,0 +1,24 @@
+name: Temporary source extraction
+on:
+  push:
+    paths:
+      - ".github/workflows/unpack-source.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract source archive
+        run: |
+          mkdir extracted
+          unzip -q SkyWorldClans-1.0.0-source.zip -d extracted
+          test -n "$(find extracted -type f -name '*.java' -print -quit)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skyworldclans-extracted-source
+          path: extracted/
+          if-no-files-found: error
+          retention-days: 1
