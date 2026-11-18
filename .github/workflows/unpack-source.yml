@@ -22,7 +22,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p extracted
-          unzip -q SkyWorldClans-1.0.0-source.zip -d extracted
+          python3 - <<'PY'
+          import pathlib, zipfile
+          root = pathlib.Path("extracted").resolve()
+          with zipfile.ZipFile("SkyWorldClans-1.0.0-source.zip") as archive:
+              for item in archive.infolist():
+                  name = item.filename.replace("\\\\", "/")
+                  target = (root / name).resolve()
+                  if target != root and root not in target.parents:
+                      raise SystemExit(f"Unsafe archive path: {item.filename}")
+                  if item.is_dir():
+                      target.mkdir(parents=True, exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      with archive.open(item) as source, target.open("wb") as destination:
+                          destination.write(source.read())
+          PY
           POM="$(find extracted -type f -name pom.xml -print -quit)"
           if [ -z "$POM" ]; then
             echo "No pom.xml found in source archive" | tee extracted/AUDIT_STATUS.txt
@@ -48,7 +63,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          mkdir -p audit-output
+          mkdir -p audit-output extracted
           echo "Maven exit code: ${MAVEN_EXIT_CODE:-not-run}" > audit-output/AUDIT_STATUS.txt
           find extracted -type f \( -name '*.java' -o -name '*.yml' -o -name '*.yaml' -o -name '*.md' -o -name 'pom.xml' \) | sort > audit-output/SOURCE_FILE_LIST.txt
           find extracted -type f \( -path '*/target/surefire-reports/*' -o -path '*/target/failsafe-reports/*' -o -name '*.jar' \) -exec cp --parents {} audit-output/ \; 2>/dev/null || true
