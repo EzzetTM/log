@@ -77,26 +77,26 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
           
           root = Path("extracted")
           
+          # Fix reward coordinator initialization order.
           plugin = root / "src/main/java/com/skyworldclans/SkyWorldClansPlugin.java"
           s = plugin.read_text(encoding="utf-8")
-          old_line = """            clanRewardCoordinator = new ClanRewardCoordinator(getClanStore(), getClanStore(),
-                              vaultEconomyBridge, java.time.Clock.systemUTC(), java.util.UUID::randomUUID);
-          """
+          old_line = ("            clanRewardCoordinator = new ClanRewardCoordinator(getClanStore(), getClanStore(),\n"
+                      "                    vaultEconomyBridge, java.time.Clock.systemUTC(), java.util.UUID::randomUUID);\n")
           if s.count(old_line) != 1:
               raise SystemExit("Expected exactly one early reward coordinator construction")
           s = s.replace(old_line, "", 1)
           needle = "        vaultEconomyBridge = discoverVaultEconomyBridge();\n"
           if s.count(needle) != 1:
               raise SystemExit("Could not locate Vault discovery point")
-          s = s.replace(needle, needle + """        clanRewardCoordinator = new ClanRewardCoordinator(getClanStore(), getClanStore(),
-                          vaultEconomyBridge, java.time.Clock.systemUTC(), java.util.UUID::randomUUID);
-          """, 1)
+          s = s.replace(needle, needle +
+                        "        clanRewardCoordinator = new ClanRewardCoordinator(getClanStore(), getClanStore(),\n"
+                        "                vaultEconomyBridge, java.time.Clock.systemUTC(), java.util.UUID::randomUUID);\n", 1)
           
-          start = s.index("    public boolean isChatMuted(")
-          end = s.index("\n    /** Administrative function blocks", start)
+          # Fail closed if moderation state cannot be read.
           new_method = """    public boolean isChatMuted(java.util.UUID playerId) {
                   if (clanRuntime == null || playerId == null) return true;
                   try {
@@ -112,16 +112,14 @@ jobs:
                   }
               }
           """
-          s = s[:start] + new_method + s[end:]
+          s, n = re.subn(r"(?ms)^    public boolean isChatMuted\(.*?(?=^    /\*\* Administrative function blocks)", new_method, s)
+          if n != 1:
+              raise SystemExit(f"Expected one isChatMuted method, replaced {n}")
           plugin.write_text(s, encoding="utf-8")
           
+          # Enforce anonymous-report redaction at the service boundary.
           admin = root / "src/main/java/com/skyworldclans/admin/ClanAdministrationService.java"
           s = admin.read_text(encoding="utf-8")
-          old_reports = """    public List<SqliteClanStore.ClanReport> reports(Level level, String status, int limit) {
-                  if (level == Level.NONE) return List.of();
-                  return store.findClanReports(status, limit);
-              }
-          """
           new_reports = """    public List<SqliteClanStore.ClanReport> reports(Level level, String status, int limit) {
                   if (level == Level.NONE) return List.of();
                   return store.findClanReports(status, limit).stream()
@@ -133,16 +131,16 @@ jobs:
                           .toList();
               }
           """
-          if s.count(old_reports) != 1:
-              raise SystemExit("Expected reports() implementation not found exactly once")
-          admin.write_text(s.replace(old_reports, new_reports, 1), encoding="utf-8")
+          s, n = re.subn(r"(?ms)^    public List<SqliteClanStore\.ClanReport> reports\(Level level, String status, int limit\) \{.*?^    \}", new_reports.rstrip(), s)
+          if n != 1:
+              raise SystemExit(f"Expected one reports method, replaced {n}")
+          admin.write_text(s, encoding="utf-8")
           
+          # Add regression assertions for list-based anonymous-report access.
           test = root / "src/test/java/com/skyworldclans/admin/ClanAdministrationServiceTest.java"
           s = test.read_text(encoding="utf-8")
-          needle = """            UUID anonymousId = store.findClanReports(null, 50).stream()
-                              .filter(report -> report.anonymous()).findFirst().orElseThrow().reportId();
-          """
-          addition = needle + """            var listedModeratorReport = service.reports(ClanAdministrationService.Level.MODERATOR, null, 50)
+          marker = "                    .filter(report -> report.anonymous()).findFirst().orElseThrow().reportId();\n"
+          addition = marker + """            var listedModeratorReport = service.reports(ClanAdministrationService.Level.MODERATOR, null, 50)
                               .stream().filter(report -> report.reportId().equals(anonymousId)).findFirst().orElseThrow();
                       assertEquals("anonymous", listedModeratorReport.authorName());
                       assertEquals(new UUID(0L, 0L), listedModeratorReport.authorId());
@@ -151,24 +149,20 @@ jobs:
                       assertEquals("Hidden", listedOwnerReport.authorName());
                       assertEquals(id(3), listedOwnerReport.authorId());
           """
-          if s.count(needle) != 1:
+          if s.count(marker) != 1:
               raise SystemExit("Could not locate anonymous report test insertion point")
-          test.write_text(s.replace(needle, addition, 1), encoding="utf-8")
+          test.write_text(s.replace(marker, addition, 1), encoding="utf-8")
           
+          # Owner-only permission is not inherited by every OP.
           plugin_yml = root / "src/main/resources/plugin.yml"
           s = plugin_yml.read_text(encoding="utf-8")
-          old_perm = """  skyworldclans.admin.owner:
-              description: Owner level of the clan admin panel (full access, anonymous report identities)
-              default: op
-          """
-          new_perm = """  skyworldclans.admin.owner:
-              description: Owner level of the clan admin panel (full access, anonymous report identities)
-              default: false
-          """
-          if s.count(old_perm) != 1:
-              raise SystemExit("Owner permission declaration not found")
-          plugin_yml.write_text(s.replace(old_perm, new_perm, 1), encoding="utf-8")
+          pattern = r"(?m)(^  skyworldclans\.admin\.owner:\n  description:.*\n  default: )op$"
+          s, n = re.subn(pattern, r"\g<1>false", s)
+          if n != 1:
+              raise SystemExit(f"Expected one owner permission default, replaced {n}")
+          plugin_yml.write_text(s, encoding="utf-8")
           
+          # Correct stale documentation around resolved decisions and the actual residual blockers.
           commands = root / "docs/COMMANDS_AND_PERMISSIONS.md"
           s = commands.read_text(encoding="utf-8")
           s = s.replace("### Административные (только консоль)", "### Административные команды и панель")
@@ -183,8 +177,7 @@ jobs:
           commands.write_text(s, encoding="utf-8")
           
           report = root / "docs/IMPLEMENTATION_REPORT.md"
-          s = report.read_text(encoding="utf-8")
-          s = s.replace("426 тестов", "445 тестов")
+          s = report.read_text(encoding="utf-8").replace("426 тестов", "445 тестов")
           a = s.index("## 3. Ограничения")
           b = s.index("## 4. Внешние зависимости", a)
           new_section = """## 3. Остаточные блокеры и незавершённая приёмка
