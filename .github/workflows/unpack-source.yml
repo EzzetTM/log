@@ -156,7 +156,7 @@ jobs:
           # Owner-only permission is not inherited by every OP.
           plugin_yml = root / "src/main/resources/plugin.yml"
           s = plugin_yml.read_text(encoding="utf-8")
-          pattern = r"(?m)(^  skyworldclans\.admin\.owner:\n  description:.*\n  default: )op$"
+          pattern = r"(?m)(^  skyworldclans\.admin\.owner:\n    description:.*\n    default: )op$"
           s, n = re.subn(pattern, r"\g<1>false", s)
           if n != 1:
               raise SystemExit(f"Expected one owner permission default, replaced {n}")
@@ -220,6 +220,8 @@ jobs:
           echo "Maven exit code: ${MAVEN_EXIT_CODE:-not-run}" > audit-output/AUDIT_STATUS.txt
           find extracted -type f \( -name '*.java' -o -name '*.yml' -o -name '*.yaml' -o -name '*.md' -o -name 'pom.xml' \) | sort > audit-output/SOURCE_FILE_LIST.txt
           find extracted -type f \( -path '*/target/surefire-reports/*' -o -path '*/target/failsafe-reports/*' -o -name '*.jar' \) -exec cp --parents {} audit-output/ \; 2>/dev/null || true
+          cp extracted/target/SkyWorldClans-1.0.0-SNAPSHOT.jar audit-output/SkyWorldClans-1.0.0.jar
+          (cd extracted && zip -qr ../audit-output/SkyWorldClans-1.0.0-source-fixed.zip README.md docs pom.xml src)
       - uses: actions/upload-artifact@v4
         if: always()
         with:
